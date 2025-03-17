@@ -1,11 +1,7 @@
+use std::collections::HashMap;
 use std::io;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
-
-use crossbeam_utils::atomic::AtomicCell;
-use parking_lot::Mutex;
-
-use tun::device::IFace;
-use tun::Device;
 
 use crate::channel::context::ChannelContext;
 use crate::cipher::Cipher;
@@ -17,15 +13,18 @@ use crate::handle::{CurrentDeviceInfo, PeerDeviceInfo};
 use crate::ip_proxy::IpProxyMap;
 use crate::tun_tap_device::vnt_device::DeviceWrite;
 use crate::util::StopManager;
+use crossbeam_utils::atomic::AtomicCell;
+use parking_lot::Mutex;
+use tun_rs::SyncDevice;
 
 #[repr(transparent)]
 #[derive(Clone, Default)]
 pub struct DeviceAdapter {
-    tun: Arc<Mutex<Option<Arc<Device>>>>,
+    tun: Arc<Mutex<Option<Arc<SyncDevice>>>>,
 }
 
 impl DeviceAdapter {
-    pub fn insert(&self, device: Arc<Device>) {
+    pub fn insert(&self, device: Arc<SyncDevice>) {
         let r = self.tun.lock().replace(device);
         assert!(r.is_none());
     }
@@ -39,7 +38,7 @@ impl DeviceWrite for DeviceAdapter {
     #[inline]
     fn write(&self, buf: &[u8]) -> io::Result<usize> {
         if let Some(tun) = self.tun.lock().as_ref() {
-            tun.write(buf)
+            tun.send(buf)
         } else {
             Err(io::Error::new(io::ErrorKind::NotFound, "not tun device"))
         }
@@ -67,7 +66,7 @@ struct TunDeviceHelperInner {
     ip_proxy_map: Option<IpProxyMap>,
     client_cipher: Cipher,
     server_cipher: Cipher,
-    device_list: Arc<Mutex<(u16, Vec<PeerDeviceInfo>)>>,
+    device_map: Arc<Mutex<(u16, HashMap<Ipv4Addr, PeerDeviceInfo>)>>,
     compressor: Compressor,
 }
 
@@ -80,7 +79,7 @@ impl TunDeviceHelper {
         #[cfg(feature = "ip_proxy")] ip_proxy_map: Option<IpProxyMap>,
         client_cipher: Cipher,
         server_cipher: Cipher,
-        device_list: Arc<Mutex<(u16, Vec<PeerDeviceInfo>)>>,
+        device_map: Arc<Mutex<(u16, HashMap<Ipv4Addr, PeerDeviceInfo>)>>,
         compressor: Compressor,
         device_adapter: DeviceAdapter,
     ) -> Self {
@@ -93,7 +92,7 @@ impl TunDeviceHelper {
             ip_proxy_map,
             client_cipher,
             server_cipher,
-            device_list,
+            device_map,
             compressor,
         };
         Self {
@@ -117,7 +116,7 @@ impl TunDeviceHelper {
         }
     }
     /// 要保证先stop 再start
-    pub fn start(&self, device: Arc<Device>) -> io::Result<()> {
+    pub fn start(&self, device: Arc<SyncDevice>, allow_wire_guard: bool) -> io::Result<()> {
         self.device_adapter.insert(device.clone());
         let device_stop = DeviceStop::default();
         let s = self.device_stop.lock().replace(device_stop.clone());
@@ -133,9 +132,10 @@ impl TunDeviceHelper {
             inner.ip_proxy_map,
             inner.client_cipher,
             inner.server_cipher,
-            inner.device_list,
+            inner.device_map,
             inner.compressor,
             device_stop,
+            allow_wire_guard,
         )
     }
 }

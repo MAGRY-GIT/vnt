@@ -1,6 +1,6 @@
 [package]
 name = "vnt-cli"
-version = "1.2.11"
+version = "1.2.16"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -10,7 +10,7 @@ vnt = { path = "../vnt", package = "vnt", default-features = false, features = [
 common = { path = "../common", default-features = false, features = ["integrated_tun"] }
 log = "0.4.17"
 anyhow = "1.0.82"
-
+console = "0.15.2"
 
 [target.'cfg(any(target_os = "linux",target_os = "macos"))'.dependencies]
 sudo = "0.6.0"

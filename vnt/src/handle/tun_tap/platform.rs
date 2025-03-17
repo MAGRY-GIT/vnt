@@ -10,22 +10,24 @@ use crate::ip_proxy::IpProxyMap;
 use crate::util::StopManager;
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
-use tun::device::IFace;
-use tun::Device;
+use tun_rs::SyncDevice;
 
 pub(crate) fn start_simple(
     stop_manager: StopManager,
     context: &ChannelContext,
-    device: Arc<Device>,
+    device: Arc<SyncDevice>,
     current_device: Arc<AtomicCell<CurrentDeviceInfo>>,
     ip_route: ExternalRoute,
     #[cfg(feature = "ip_proxy")] ip_proxy_map: Option<IpProxyMap>,
     client_cipher: Cipher,
     server_cipher: Cipher,
-    device_list: Arc<Mutex<(u16, Vec<PeerDeviceInfo>)>>,
+    device_map: Arc<Mutex<(u16, HashMap<Ipv4Addr, PeerDeviceInfo>)>>,
     compressor: Compressor,
     device_stop: DeviceStop,
+    allow_wire_guard: bool,
 ) -> anyhow::Result<()> {
     let worker = {
         let device = device.clone();
@@ -54,8 +56,9 @@ pub(crate) fn start_simple(
         ip_proxy_map,
         client_cipher,
         server_cipher,
-        device_list,
+        device_map,
         compressor,
+        allow_wire_guard,
     ) {
         log::error!("{:?}", e);
     }
@@ -68,20 +71,20 @@ pub(crate) fn start_simple(
 
 fn start_simple0(
     context: &ChannelContext,
-    device: Arc<Device>,
+    device: Arc<SyncDevice>,
     current_device: Arc<AtomicCell<CurrentDeviceInfo>>,
     ip_route: ExternalRoute,
     #[cfg(feature = "ip_proxy")] ip_proxy_map: Option<IpProxyMap>,
     client_cipher: Cipher,
     server_cipher: Cipher,
-    device_list: Arc<Mutex<(u16, Vec<PeerDeviceInfo>)>>,
+    device_map: Arc<Mutex<(u16, HashMap<Ipv4Addr, PeerDeviceInfo>)>>,
     compressor: Compressor,
+    allow_wire_guard: bool,
 ) -> anyhow::Result<()> {
     let mut buf = [0; BUFFER_SIZE];
     let mut extend = [0; BUFFER_SIZE];
     loop {
-        let len = device.read(&mut buf[12..])? + 12;
-        //单线程的
+        let len = device.recv(&mut buf[12..])? + 12;
         // buf是重复利用的，需要重置头部
         buf[..12].fill(0);
         match crate::handle::tun_tap::tun_handler::handle(
@@ -96,8 +99,9 @@ fn start_simple0(
             &ip_proxy_map,
             &client_cipher,
             &server_cipher,
-            &device_list,
+            &device_map,
             &compressor,
+            allow_wire_guard,
         ) {
             Ok(_) => {}
             Err(e) => {

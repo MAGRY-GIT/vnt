@@ -10,7 +10,7 @@ impl VntCallback for VntHandler {
     fn success(&self) {
         println!(" {} ", style("====== Connect Successfully ======").green())
     }
-    #[cfg(feature = "vnt-model")]
+    #[cfg(feature = "integrated_tun")]
     fn create_tun(&self, info: vnt::DeviceInfo) {
         println!("create_tun {}", info)
     }
@@ -37,7 +37,8 @@ impl VntCallback for VntHandler {
             | ErrorType::AddressExhausted
             | ErrorType::IpAlreadyExists
             | ErrorType::InvalidIp
-            | ErrorType::LocalIpExists => {
+            | ErrorType::LocalIpExists
+            | ErrorType::FailedToCrateDevice => {
                 self.stop();
             }
             _ => {}

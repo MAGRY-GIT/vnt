@@ -46,6 +46,9 @@ pub struct FileConfig {
     pub compressor: Option<String>,
     pub vnt_mapping: Vec<String>,
     pub disable_stats: bool,
+    // 允许传递wg流量
+    pub allow_wire_guard: bool,
+    pub local_dev: Option<String>,
 }
 
 impl Default for FileConfig {
@@ -90,6 +93,8 @@ impl Default for FileConfig {
             compressor: None,
             vnt_mapping: vec![],
             disable_stats: false,
+            allow_wire_guard: false,
+            local_dev: None,
         }
     }
 }
@@ -99,8 +104,8 @@ pub fn read_config(file_path: &str) -> anyhow::Result<(Config, Vec<String>, bool
     let file_conf = match serde_yaml::from_str::<FileConfig>(&conf) {
         Ok(val) => val,
         Err(e) => {
-            log::error!("{:?}", e);
-            return Err(anyhow!("{}", e));
+            log::error!("serde_yaml::from_str {:?}", e);
+            return Err(anyhow!("serde_yaml::from_str {:?}", e));
         }
     };
     if file_conf.token.is_empty() {
@@ -123,12 +128,12 @@ pub fn read_config(file_path: &str) -> anyhow::Result<(Config, Vec<String>, bool
         None => None,
         Some(r) => Some(r.map_err(|e| anyhow!("ip {:?} error:{}", &file_conf.ip, e))?),
     };
-    let cipher_model = {
+    let cipher_model = if let Some(v) = file_conf.cipher_model {
+        CipherModel::from_str(&v).map_err(|e| anyhow!("{}", e))?
+    } else {
         #[cfg(not(any(feature = "aes_gcm", feature = "server_encrypt")))]
-        if file_conf.password.is_some() && file_conf.cipher_model.is_none() {
+        if file_conf.password.is_some() {
             Err(anyhow!("cipher_model undefined"))?
-        } else if let Some(v) = file_conf.cipher_model {
-            CipherModel::from_str(&v).map_err(|e| anyhow!("{}", e))?
         } else {
             CipherModel::None
         }
@@ -177,6 +182,8 @@ pub fn read_config(file_path: &str) -> anyhow::Result<(Config, Vec<String>, bool
         file_conf.mapping,
         compressor,
         !file_conf.disable_stats,
+        file_conf.allow_wire_guard,
+        file_conf.local_dev,
     )?;
 
     Ok((config, file_conf.vnt_mapping, file_conf.cmd))

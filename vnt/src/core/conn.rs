@@ -66,12 +66,13 @@ pub struct VntInner {
     config: Config,
     current_device: Arc<AtomicCell<CurrentDeviceInfo>>,
     nat_test: NatTest,
-    device_list: Arc<Mutex<(u16, Vec<PeerDeviceInfo>)>>,
+    device_map: Arc<Mutex<(u16, HashMap<Ipv4Addr, PeerDeviceInfo>)>>,
     context: Arc<Mutex<Option<ChannelContext>>>,
     peer_nat_info_map: Arc<RwLock<HashMap<Ipv4Addr, NatInfo>>>,
     client_secret_hash: Option<[u8; 16]>,
     compressor: Compressor,
     client_cipher: Cipher,
+    server_cipher: Cipher,
     external_route: ExternalRoute,
     up_traffic_meter: Option<TrafficMeterMultiAddress>,
     down_traffic_meter: Option<TrafficMeterMultiAddress>,
@@ -104,6 +105,7 @@ impl VntInner {
         } else {
             (None, None)
         };
+
         //服务端非对称加密
         #[cfg(feature = "server_encrypt")]
         let rsa_cipher: Arc<Mutex<Option<RsaCipher>>> = Arc::new(Mutex::new(None));
@@ -128,8 +130,15 @@ impl VntInner {
             config.server_address,
         )));
         //设备列表
-        let device_list: Arc<Mutex<(u16, Vec<PeerDeviceInfo>)>> =
-            Arc::new(Mutex::new((0, Vec::with_capacity(16))));
+        let device_map: Arc<Mutex<(u16, HashMap<Ipv4Addr, PeerDeviceInfo>)>> =
+            Arc::new(Mutex::new((0, HashMap::with_capacity(16))));
+        let local_ipv4 = if let Some(local_ipv4) = config.local_ipv4 {
+            Some(local_ipv4)
+        } else {
+            nat::local_ipv4()
+        };
+        let default_interface = config.local_interface.clone();
+
         //基础信息
         let config_info = BaseConfigInfo::new(
             config.name.clone(),
@@ -147,6 +156,8 @@ impl VntInner {
             #[cfg(feature = "integrated_tun")]
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             config.device_name.clone(),
+            config.allow_wire_guard,
+            default_interface.clone(),
         );
         // 服务停止管理器
         let stop_manager = {
@@ -177,10 +188,10 @@ impl VntInner {
             config.protocol,
             config.packet_loss_rate,
             config.packet_delay,
+            default_interface,
             up_traffic_meter.clone(),
             down_traffic_meter.clone(),
         )?;
-        let local_ipv4 = nat::local_ipv4();
         let local_ipv6 = nat::local_ipv6();
         let udp_ports = context.main_local_udp_port()?;
         let tcp_port = tcp_listener.local_addr()?.port();
@@ -192,6 +203,8 @@ impl VntInner {
             local_ipv6,
             udp_ports,
             tcp_port,
+            config.local_ipv4.is_none(),
+            config.punch_model,
         );
         // 定时器
         let scheduler = Scheduler::new(stop_manager.clone())?;
@@ -228,7 +241,7 @@ impl VntInner {
                 proxy_map.clone(),
                 client_cipher.clone(),
                 server_cipher.clone(),
-                device_list.clone(),
+                device_map.clone(),
                 config.compressor,
                 device.clone().into_device_adapter(),
             )
@@ -241,7 +254,7 @@ impl VntInner {
             client_cipher.clone(),
             current_device.clone(),
             device,
-            device_list.clone(),
+            device_map.clone(),
             config_info.clone(),
             nat_test.clone(),
             callback.clone(),
@@ -264,9 +277,7 @@ impl VntInner {
         let punch = Punch::new(
             context.clone(),
             config.punch_model,
-            config.protocol.is_base_tcp(),
             connect_util.clone(),
-            external_route.clone(),
             nat_test.clone(),
             current_device.clone(),
         );
@@ -287,7 +298,7 @@ impl VntInner {
         {
             let context = context.clone();
             let nat_test = nat_test.clone();
-            let device_list = device_list.clone();
+            let device_map = device_map.clone();
             let config_info = config_info.clone();
             let current_device = current_device.clone();
             if !config.use_channel_type.is_only_relay() {
@@ -300,13 +311,14 @@ impl VntInner {
                 );
             }
             let client_cipher = client_cipher.clone();
+            let server_cipher = server_cipher.clone();
             //延迟启动
             scheduler.timeout(Duration::from_secs(3), move |scheduler| {
                 start(
                     scheduler,
                     context,
                     nat_test,
-                    device_list,
+                    device_map,
                     current_device,
                     client_cipher,
                     server_cipher,
@@ -323,12 +335,13 @@ impl VntInner {
             config,
             current_device,
             nat_test,
-            device_list,
+            device_map,
             context: Arc::new(Mutex::new(Some(context))),
             peer_nat_info_map,
             client_secret_hash: config_info.client_secret_hash,
             compressor,
             client_cipher,
+            server_cipher,
             external_route,
             up_traffic_meter,
             down_traffic_meter,
@@ -340,7 +353,7 @@ pub fn start<Call: VntCallback>(
     scheduler: &Scheduler,
     context: ChannelContext,
     nat_test: NatTest,
-    device_list: Arc<Mutex<(u16, Vec<PeerDeviceInfo>)>>,
+    device_map: Arc<Mutex<(u16, HashMap<Ipv4Addr, PeerDeviceInfo>)>>,
     current_device: Arc<AtomicCell<CurrentDeviceInfo>>,
     client_cipher: Cipher,
     server_cipher: Cipher,
@@ -354,7 +367,7 @@ pub fn start<Call: VntCallback>(
         &scheduler,
         context.clone(),
         current_device.clone(),
-        device_list.clone(),
+        device_map.clone(),
         client_cipher.clone(),
         server_cipher.clone(),
     );
@@ -374,7 +387,7 @@ pub fn start<Call: VntCallback>(
             &scheduler,
             context.clone(),
             current_device.clone(),
-            device_list.clone(),
+            device_map.clone(),
             client_cipher.clone(),
         );
     }
@@ -393,7 +406,7 @@ pub fn start<Call: VntCallback>(
             &scheduler,
             context.clone(),
             nat_test.clone(),
-            device_list.clone(),
+            device_map.clone(),
             current_device.clone(),
             client_cipher.clone(),
             punch_receiver,
@@ -432,10 +445,10 @@ impl VntInner {
         self.nat_test.nat_info()
     }
     pub fn device_list(&self) -> Vec<PeerDeviceInfo> {
-        let device_list_lock = self.device_list.lock();
+        let device_list_lock = self.device_map.lock();
         let (_epoch, device_list) = device_list_lock.clone();
         drop(device_list_lock);
-        device_list
+        device_list.into_values().collect()
     }
     pub fn route(&self, ip: &Ipv4Addr) -> Option<Route> {
         self.context.lock().as_ref()?.route_table.route_one(ip)
@@ -507,7 +520,10 @@ impl VntInner {
                 self.current_device.clone(),
                 self.compressor.clone(),
                 self.client_cipher.clone(),
+                self.server_cipher.clone(),
                 self.external_route.clone(),
+                self.device_map.clone(),
+                self.config.allow_wire_guard,
             ))
         } else {
             None

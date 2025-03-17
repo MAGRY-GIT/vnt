@@ -12,7 +12,12 @@ fn main() {
             }
         }
         Err(e) => {
-            println!("{}", e);
+            log::error!(
+                "parse error={:?} cmd={:?}",
+                e,
+                std::env::args().collect::<Vec<String>>()
+            );
+            println!("Error {:?}", e);
             return;
         }
     };

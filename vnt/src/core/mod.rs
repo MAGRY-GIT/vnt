@@ -5,6 +5,7 @@ use std::str::FromStr;
 pub use conn::Vnt;
 
 use crate::channel::punch::PunchModel;
+use crate::channel::socket::LocalInterface;
 use crate::channel::{ConnectProtocol, UseChannelType};
 use crate::cipher::CipherModel;
 use crate::compression::Compressor;
@@ -51,6 +52,9 @@ pub struct Config {
     pub port_mapping_list: Vec<(bool, SocketAddr, String)>,
     pub compressor: Compressor,
     pub enable_traffic: bool,
+    pub allow_wire_guard: bool,
+    pub local_ipv4: Option<Ipv4Addr>,
+    pub local_interface: LocalInterface,
 }
 
 impl Config {
@@ -88,6 +92,9 @@ impl Config {
         #[cfg(feature = "port_mapping")] port_mapping_list: Vec<String>,
         compressor: Compressor,
         enable_traffic: bool,
+        // 允许传递wg流量
+        allow_wire_guard: bool,
+        local_dev: Option<String>,
     ) -> anyhow::Result<Self> {
         for x in stun_server.iter_mut() {
             if !x.contains(":") {
@@ -134,8 +141,11 @@ impl Config {
                 server_address_str = s.to_string();
                 protocol = ConnectProtocol::TCP;
             }
-            server_address =
-                address_choose(dns_query_all(&server_address_str, name_servers.clone())?)?;
+            server_address = address_choose(dns_query_all(
+                &server_address_str,
+                name_servers.clone(),
+                &LocalInterface::default(),
+            )?)?;
         }
         #[cfg(feature = "port_mapping")]
         let port_mapping_list = crate::port_mapping::convert(port_mapping_list)?;
@@ -144,6 +154,13 @@ impl Config {
             *dest = *mask & *dest;
         }
         in_ips.sort_by(|(dest1, _, _), (dest2, _, _)| dest2.cmp(dest1));
+        let (local_interface, local_ipv4) = if let Some(local_dev) = local_dev {
+            let (default_interface, ip) = crate::channel::socket::get_interface(local_dev)?;
+            log::info!("default_interface = {:?} local_ip= {ip}", default_interface);
+            (default_interface, Some(ip))
+        } else {
+            (LocalInterface::default(), None)
+        };
         Ok(Self {
             #[cfg(feature = "integrated_tun")]
             #[cfg(target_os = "windows")]
@@ -180,6 +197,9 @@ impl Config {
             port_mapping_list,
             compressor,
             enable_traffic,
+            allow_wire_guard,
+            local_ipv4,
+            local_interface,
         })
     }
 }
